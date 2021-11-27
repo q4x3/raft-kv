@@ -257,7 +257,7 @@ int raft_group<state_machine, command>::check_same_term() {
         node->is_leader(term); // get the current term
         ASSERT(term >= 0, "invalid term: " << term);
         if (current_term == -1) current_term = term;
-        ASSERT(current_term == term, "inconsistent term: " << current_term << ", " << term);
+        ASSERT(current_term == term, "inconsistent term: " << current_term << ", " << term << ", " << i);
     }
     return current_term;
 }

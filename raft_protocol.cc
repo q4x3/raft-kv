@@ -30,11 +30,13 @@ unmarshall& operator>>(unmarshall &u, request_vote_reply& reply) {
 marshall& operator<<(marshall &m, const append_entries_reply& reply) {
     m << reply.term;
     m << reply.success;
+    m << reply.index;
     return m;
 }
 unmarshall& operator>>(unmarshall &u, append_entries_reply& reply) {
     u >> reply.term;
     u >> reply.success;
+    u >> reply.index;
     return u;
 }
 

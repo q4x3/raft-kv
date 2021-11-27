@@ -52,6 +52,8 @@ public:
     // Your code here
     int term;
     command cmd;
+    log_entry():term(-1) {}
+    log_entry(int term, command cmd): term(term), cmd(cmd) {}
 };
 
 template<typename command>
@@ -79,10 +81,10 @@ public:
     int prev_log_idx;
     int prev_log_term;
     std::vector<log_entry<command>> entries;
-    int leader_idx;
+    int leader_commit;
     append_entries_args():entries(std::vector<log_entry<command>>()) {}
     append_entries_args(int _term, int _id, int _prev_idx, int _prev_term, std::vector<log_entry<command>> _entries, int _idx):
-        term(_term), leader_id(_id), prev_log_idx(_prev_idx), prev_log_term(_prev_term), entries(_entries), leader_idx(_idx) {}
+        term(_term), leader_id(_id), prev_log_idx(_prev_idx), prev_log_term(_prev_term), entries(_entries), leader_commit(_idx) {}
 };
 
 template<typename command>
@@ -92,10 +94,8 @@ marshall& operator<<(marshall &m, const append_entries_args<command>& args) {
     m << args.leader_id;
     m << args.prev_log_idx;
     m << args.prev_log_term;
-    for(int i = 0;i < args.entries.size();++ i) {
-        m << (args.entries)[i];
-    }
-    m << args.leader_idx;
+    m << args.entries;
+    m << args.leader_commit;
     return m;
 }
 
@@ -106,10 +106,8 @@ unmarshall& operator>>(unmarshall &u, append_entries_args<command>& args) {
     u >> args.leader_id;
     u >> args.prev_log_idx;
     u >> args.prev_log_term;
-    for(int i = 0;i < args.entries.size();++ i) {
-        u >> (args.entries)[i];
-    }
-    u >> args.leader_idx;
+    u >> args.entries;
+    u >> args.leader_commit;
     return u;
 }
 
@@ -117,7 +115,8 @@ class append_entries_reply {
 public:
     // Your code here
     int term;                       // current term, for leader to update itself
-    int success;                    // true if follower contained entry matching prev_log_index and prev_log_term
+    int success;                    // 1 if follower contained entry matching prev_log_index and prev_log_term, 2 if heartbeat, 0 if fail.
+    int index;                      // index of last log after append, only available if success = 1
 };
 
 marshall& operator<<(marshall &m, const append_entries_reply& reply);
