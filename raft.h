@@ -88,7 +88,6 @@ private:
         candidate,
         leader
     };
-    raft_role role;
 
     std::thread* background_election;
     std::thread* background_ping;
@@ -97,20 +96,21 @@ private:
 
     // Your code here:
 
-    int vote_num;                           // how much vote granted received
-    long long last_received_rpc_time;       // when receive last rpc
-    int election_timeout;                   // wait for this long, then timeout, range in [300, 500]
-    int leader_id;                          // current leader id, -1 if none;
     // persistent state on all servers
     int current_term;                       // latest term server has seen
     int voted_for;                          // candidate id that received vote in current term (-1 if none)
     std::vector<log_entry<command>> log;    // log entries
+    raft_role role;
 
     // volatile state on all servers
     int commit_idx;                         // index of highest log entry known to be commited
     int last_applied;                       // index of highest log entry applied to state machine
+    
+    long long last_received_rpc_time;       // when receive last rpc
+    int election_timeout;                   // wait for this long, then timeout, range in [300, 500] for followers, 1000 for candidates
 
     // volatile state on leaders
+    int vote_num;                           // how much vote granted received
     /** for each server, index of the next log entry to send to that server
      * init to leader last log index + 1
      **/
@@ -164,12 +164,12 @@ private:
 };
 
 template<typename state_machine, typename command>
-raft<state_machine, command>::raft(rpcs* server, std::vector<rpcc*> clients, int idx, raft_storage<command> *storage, state_machine *state) :
-    storage(storage),
-    state(state),   
+raft<state_machine, command>::raft(rpcs* server, std::vector<rpcc*> clients, int idx, raft_storage<command> *storage, state_machine *state) :   
     rpc_server(server),
     rpc_clients(clients),
     my_id(idx),
+    storage(storage),
+    state(state),
     stopped(false),
     role(follower),
     current_term(0),
@@ -180,8 +180,7 @@ raft<state_machine, command>::raft(rpcs* server, std::vector<rpcc*> clients, int
     voted_for(-1),
     commit_idx(0),
     last_applied(0),
-    vote_num(0),
-    leader_id(-1)
+    vote_num(0)
 {
     thread_pool = new ThrPool(32);
 
@@ -338,7 +337,6 @@ void raft<state_machine, command>::handle_request_vote_reply(int target, const r
                 role = leader;
                 succeed = true;
                 vote_num = 0;
-                leader_id = my_id;
                 for(auto& idx : next_idx) {
                     idx = log.size();
                 }
@@ -367,7 +365,6 @@ int raft<state_machine, command>::append_entries(append_entries_args<command> ar
     // 若term小于current, 拒绝此rpc
     if(arg.term >= current_term) {
         update_time();                      // 更新last receive rpc time
-        leader_id = arg.leader_id;          // 更新leader id
         current_term = arg.term;            // 更新current term
         // 若当前不是follower, 则变成follower
         if(role != follower) {
@@ -378,14 +375,18 @@ int raft<state_machine, command>::append_entries(append_entries_args<command> ar
         }
         if(arg.entries.empty()) {
             // 若entries为空, 收到当前term的leader发来的claim或heartbeat或commit通知
-            // 若leader commit不为-1, 则更新commit, success设为2
+            // 若leader commit不为-1, 则判断是否更新commit, success设为2或0
             // 若leader commit为-1, 则success设为2
             success = 2;
             if(arg.leader_commit != -1) {
-                success = 2;
                 logs_mtx.lock();
                 // RAFT_LOG("Append entries have the log mtx");
-                commit_idx = arg.leader_commit;
+                // 若commit
+                if(log.size() > arg.prev_log_idx && log[arg.prev_log_idx].term == arg.prev_log_term) {
+                    commit_idx = arg.leader_commit;
+                } else {
+                    success = 0;
+                }
                 logs_mtx.unlock();
                 // RAFT_LOG("Append entries release the log mtx");
                 RAFT_LOG("I receive notify update commit_idx to %d", commit_idx);
@@ -402,7 +403,6 @@ int raft<state_machine, command>::append_entries(append_entries_args<command> ar
     mtx.unlock();
     // RAFT_LOG("Append entries release the big mtx");
     reply.success = success;
-    // if(!reply.success) RAFT_LOG("refuse leader ping in its id %d term %d", arg.leader_id, arg.term);
     return raft_rpc_status::OK;
 }
 
@@ -419,13 +419,12 @@ void raft<state_machine, command>::handle_append_entries_reply(int target, const
             current_term = arg.term;
             vote_num = 0;
             voted_for = -1;
-            leader_id = arg.leader_id;
             reset_timeout();
             RAFT_LOG("Append rpc fail because I'm old");
         } else {
-            // 因为日志term不匹配而append失败, 更新next
+            // 因为日志term不匹配而append失败或更新commit失败, 更新next
             -- next_idx[target];
-            RAFT_LOG("Append rpc fail because of slower log in follower's term %d", arg.term);
+            RAFT_LOG("Append rpc or notify commit fail because of slower log in follower's term %d", arg.term);
         }
     }
     // append log成功
@@ -670,7 +669,7 @@ void raft<state_machine, command>::heartbeat() {
     //RAFT_LOG("leader ping servers");
     for(int i = 0;i < num;++ i) {
         if(i != my_id) {
-            append_entries_args<command> arg(current_term, my_id, 0, 0, std::vector<log_entry<command>>(), -1);
+            append_entries_args<command> arg(current_term, 0, 0, std::vector<log_entry<command>>(), -1);
             thread_pool->addObjJob(this, &raft::send_append_entries, i, arg);
         }
     }
@@ -693,7 +692,6 @@ int raft<state_machine, command>::append_log(const append_entries_args<command>&
     int prev_log_idx = args.prev_log_idx;
     logs_mtx.lock();
     // RAFT_LOG("Append log have the log mtx");
-    commit_idx = args.leader_commit;
     // 日志进度比leader慢, 拒绝
     if(prev_log_idx > log.size() - 1) {
         RAFT_LOG("I fail to append log because of slower log");
@@ -703,6 +701,7 @@ int raft<state_machine, command>::append_log(const append_entries_args<command>&
     }
     // 日志进度大于等于leader, 分情况
     if(args.prev_log_term == log[prev_log_idx].term) {
+        commit_idx = args.leader_commit;
         // 日志与leader一致, 删除一致部分之后的内容, append args里的entry
         while((log.size() - 1) != prev_log_idx) log.pop_back();
         for(const auto& entry : args.entries) {
@@ -734,9 +733,13 @@ void raft<state_machine, command>::apply_log() {
 template<typename state_machine, typename command>
 void raft<state_machine, command>::notify_commit() {
     int num = num_nodes();
+    logs_mtx.lock();
+    int idx = commit_idx;
+    int term = log[idx].term;
+    logs_mtx.unlock();
     for(int i = 0;i < num;++ i) {
         if(i != my_id) {
-            append_entries_args<command> arg(current_term, my_id, 0, 0, std::vector<log_entry<command>>(), commit_idx);
+            append_entries_args<command> arg(current_term, idx, term, std::vector<log_entry<command>>(), idx);
             thread_pool->addObjJob(this, &raft::send_append_entries, i, arg);
         }
     }
@@ -752,7 +755,7 @@ void raft<state_machine, command>::send_append_rpc(int target) {
     // RAFT_LOG("Send append rpc release the big mtx");
     // RAFT_LOG("Leader send append rpc to server %d, prev_log_idx %d", target, prev_log_idx);
     std::vector<log_entry<command>> entries(log.begin() + prev_log_idx + 1, log.end());
-    append_entries_args<command> arg(current_term, my_id, prev_log_idx, prev_log_term, entries, commit_idx);
+    append_entries_args<command> arg(current_term, prev_log_idx, prev_log_term, entries, commit_idx);
     thread_pool->addObjJob(this, &raft::send_append_entries, target, arg);
 }
 

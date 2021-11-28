@@ -77,21 +77,19 @@ class append_entries_args {
 public:
     // Your code here
     int term;                                   // leader's term
-    int leader_id;                              // so that follower can redirect
     int prev_log_idx;
     int prev_log_term;
     std::vector<log_entry<command>> entries;
     int leader_commit;
     append_entries_args():entries(std::vector<log_entry<command>>()) {}
-    append_entries_args(int _term, int _id, int _prev_idx, int _prev_term, std::vector<log_entry<command>> _entries, int _idx):
-        term(_term), leader_id(_id), prev_log_idx(_prev_idx), prev_log_term(_prev_term), entries(_entries), leader_commit(_idx) {}
+    append_entries_args(int _term, int _prev_idx, int _prev_term, std::vector<log_entry<command>> _entries, int _idx):
+        term(_term), prev_log_idx(_prev_idx), prev_log_term(_prev_term), entries(_entries), leader_commit(_idx) {}
 };
 
 template<typename command>
 marshall& operator<<(marshall &m, const append_entries_args<command>& args) {
     // Your code here
     m << args.term;
-    m << args.leader_id;
     m << args.prev_log_idx;
     m << args.prev_log_term;
     m << args.entries;
@@ -103,7 +101,6 @@ template<typename command>
 unmarshall& operator>>(unmarshall &u, append_entries_args<command>& args) {
     // Your code here
     u >> args.term;
-    u >> args.leader_id;
     u >> args.prev_log_idx;
     u >> args.prev_log_term;
     u >> args.entries;
